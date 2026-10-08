@@ -1,0 +1,1108 @@
+shivansh@Shivansh-MacBook seanime-main % cd ~/Downloads/seanime-main
+
+sed -n '1,130p' seanime-web/src/app/'(main)'/_features/plugin/plugin-manager.tsx
+
+sed -n '1,180p' seanime-web/src/app/'(main)'/entry/'_containers'/torrent-stream/'_lib'/handle-torrent-stream.ts
+import { useListExtensionData } from "@/api/hooks/extensions.hooks"
+import { API_ENDPOINTS } from "@/api/generated/endpoints"
+import { queryClient, store } from "@/app/client-providers"
+import { marketplaceUrlAtom } from "@/app/(main)/extensions/_lib/marketplace.atoms"
+import { useIsMainTabRef } from "@/app/websocket-provider"
+import { useDebounce } from "@/hooks/use-debounce"
+import { copyToClipboard } from "@/lib/helpers/browser.ts"
+import { usePathname, useRouter, useSearchParams } from "@/lib/navigation"
+import { WSEvents } from "@/lib/server/ws-events"
+import { startTransition, useEffect, useState } from "react"
+import { useWindowSize } from "react-use"
+import { useWebsocketMessageListener } from "../../_hooks/handle-websockets"
+import { PluginCommandPalettes } from "./command/plugin-command-palettes"
+import { usePluginListenDOMClipboardWriteEvent } from "./generated/plugin-events"
+import {
+    usePluginListenDOMGetViewportSizeEvent,
+    usePluginListenMarketplaceGetURLEvent,
+    usePluginListenMarketplaceSetURLEvent,
+    usePluginListenScreenGetCurrentEvent,
+    usePluginListenScreenNavigateToEvent,
+    usePluginListenScreenReloadEvent,
+    usePluginSendDOMViewportSizeEvent,
+    usePluginSendMarketplaceGetURLResultEvent,
+    usePluginSendScreenChangedEvent,
+} from "./generated/plugin-events"
+import { PluginHandler } from "./plugin-handler"
+
+export function PluginManager() {
+    const router = useRouter()
+    const pathname = usePathname()
+    const searchParams = useSearchParams()
+    const { sendScreenChangedEvent } = usePluginSendScreenChangedEvent()
+    const { sendMarketplaceGetURLResultEvent } = usePluginSendMarketplaceGetURLResultEvent()
+    const isMainTabRef = useIsMainTabRef()
+
+    const { data: extensions } = useListExtensionData()
+
+    const [unloadedExtensions, setUnloadedExtensions] = useState<string[]>([])
+
+    useWebsocketMessageListener({
+        type: WSEvents.PLUGIN_LOADED,
+        onMessage: (extensionId: string) => {
+            startTransition(() => {
+                setUnloadedExtensions(prev => prev.filter(id => id !== extensionId))
+            })
+        },
+    })
+
+    useEffect(() => {
+        if (!isMainTabRef.current) return
+        sendScreenChangedEvent({
+            pathname: pathname,
+            query: searchParams.size > 0 ? "?" + searchParams.toString() : "",
+        })
+    }, [pathname, searchParams])
+
+    usePluginListenScreenGetCurrentEvent((event, extensionId) => {
+        if (!isMainTabRef.current) return
+        sendScreenChangedEvent({
+            pathname: pathname,
+            query: searchParams.size > 0 ? "?" + searchParams.toString() : "",
+        }, extensionId)
+    }, "") // Listen to all plugins
+
+    usePluginListenScreenNavigateToEvent((event) => {
+        if (!isMainTabRef.current) return
+        if ([
+            "/entry", "/lists", "/search", "/manga",
+            "/settings", "/auto-downloader", "/debrid", "/torrent-list",
+            "/schedule", "/extensions", "/sync", "/discover",
+            "/scan-summaries", "/webview", "/torrent-client",
+
+        ].some(path => event.path.startsWith(path))) {
+            router.push(event.path)
+        }
+    }, "") // Listen to all plugins
+
+    usePluginListenScreenReloadEvent((event) => {
+        if (!isMainTabRef.current) return
+        router.refresh()
+    }, "") // Li
+
+    usePluginListenDOMClipboardWriteEvent((event) => {
+        if (!isMainTabRef.current) return
+        copyToClipboard(event.text)
+    }, "") // Listen to all plugins
+
+    usePluginListenMarketplaceGetURLEvent((event, extensionId) => {
+        if (!isMainTabRef.current) return
+        sendMarketplaceGetURLResultEvent({ requestId: event.requestId, url: store.get(marketplaceUrlAtom) }, extensionId)
+    }, "") // Listen to all plugins
+
+    usePluginListenMarketplaceSetURLEvent((event) => {
+        if (!isMainTabRef.current) return
+        store.set(marketplaceUrlAtom, event.url)
+        queryClient.invalidateQueries({ queryKey: [API_ENDPOINTS.EXTENSIONS.GetMarketplaceExtensions.key] })
+    }, "") // Listen to all plugins
+
+    return <>
+        {/* Render plugin handlers for each extension */}
+        <SizeEvents />
+        {extensions?.filter(e => e.type === "plugin" && !unloadedExtensions.includes(e.id)).map(extension => (
+            <PluginHandler key={extension.id} extensionId={extension.id} onUnloaded={() => setUnloadedExtensions(prev => [...prev, extension.id])} />
+        ))}
+        <PluginCommandPalettes />
+    </>
+}
+
+function SizeEvents() {
+    const isMainTabRef = useIsMainTabRef()
+    const { sendDOMViewportSizeEvent } = usePluginSendDOMViewportSizeEvent()
+
+    const { width, height } = useWindowSize()
+    const debouncedWidth = useDebounce(width, 400)
+    const debouncedHeight = useDebounce(height, 400)
+
+    useEffect(() => {
+        if (!isMainTabRef.current) return
+        sendDOMViewportSizeEvent({
+            width: debouncedWidth,
+            height: debouncedHeight,
+        })
+    }, [debouncedWidth, debouncedHeight])
+
+    usePluginListenDOMGetViewportSizeEvent((event, extensionId) => {
+        if (!isMainTabRef.current) return
+        sendDOMViewportSizeEvent({
+            width: debouncedWidth,
+            height: debouncedHeight,
+        }, extensionId)
+import { HibikeTorrent_AnimeTorrent, HibikeTorrent_BatchEpisodeFiles } from "@/api/generated/types"
+import { useTorrentstreamStartStream } from "@/api/hooks/torrentstream.hooks"
+import {
+    ElectronPlaybackMethod,
+    PlaybackTorrentStreaming,
+    useCurrentDevicePlaybackSettings,
+    useExternalPlayerLink,
+} from "@/app/(main)/_atoms/playback.atoms"
+import { useAutoPlaySelectedTorrent, useTorrentstreamAutoplay } from "@/app/(main)/_features/autoplay/autoplay"
+import { getBatchSelectionParams } from "@/app/(main)/_features/autoplay/batches.ts"
+import { usePlaylistManager } from "@/app/(main)/_features/playlists/_containers/global-playlist-manager"
+import { useWebsocketMessageListener } from "@/app/(main)/_hooks/handle-websockets"
+import { useServerStatus } from "@/app/(main)/_hooks/use-server-status"
+import {
+    __torrentstream__isLoadedAtom,
+    __torrentstream__loadingStateAtom,
+    TorrentStreamEvents,
+} from "@/app/(main)/entry/_containers/torrent-stream/playback-play-pill"
+import {
+    __torrentStream_autoSelectFileAtom,
+    __torrentStream_currentSessionAutoSelectAtom,
+} from "@/app/(main)/entry/_containers/torrent-stream/torrent-stream-page"
+import { ForcePlaybackMethod, useForcePlaybackMethod } from "@/app/(main)/entry/_lib/handle-play-media"
+import { clientIdAtom } from "@/app/websocket-provider"
+import { logger } from "@/lib/helpers/debug"
+import { WSEvents } from "@/lib/server/ws-events"
+import { __isElectronDesktop__ } from "@/types/constants"
+import { useQueryClient } from "@tanstack/react-query"
+import { useAtomValue } from "jotai"
+import { useSetAtom } from "jotai/react"
+import React from "react"
+
+type ManualTorrentStreamSelectionProps = {
+    torrent: HibikeTorrent_AnimeTorrent
+    mediaId: number
+    episodeNumber: number
+    aniDBEpisode: string
+    chosenFileIndex: number | undefined | null
+    batchEpisodeFiles: HibikeTorrent_BatchEpisodeFiles | undefined
+    preload?: boolean
+}
+type AutoSelectTorrentStreamProps = {
+    mediaId: number
+    episodeNumber: number
+    aniDBEpisode: string
+    preload?: boolean
+}
+
+export function useHandleStartTorrentStream() {
+
+    const { mutate, isPending } = useTorrentstreamStartStream()
+    const qc = useQueryClient()
+
+    const setLoadingState = useSetAtom(__torrentstream__loadingStateAtom)
+    const setIsLoaded = useSetAtom(__torrentstream__isLoadedAtom)
+    const { torrentStreamingPlayback, electronPlaybackMethod } = useCurrentDevicePlaybackSettings()
+    const { externalPlayerLink } = useExternalPlayerLink()
+    const clientId = useAtomValue(clientIdAtom)
+
+    const setCurrentSessionAutoSelect = useSetAtom(__torrentStream_currentSessionAutoSelectAtom)
+
+    const { resetForcePlaybackMethod, getForcePlaybackMethod } = useForcePlaybackMethod()
+
+    const getPlaybackType = React.useCallback((forcePlaybackMethod?: ForcePlaybackMethod) => {
+        if (
+            (!forcePlaybackMethod && __isElectronDesktop__ && electronPlaybackMethod === ElectronPlaybackMethod.NativePlayer) ||
+            (forcePlaybackMethod && forcePlaybackMethod === "nativeplayer")
+        ) {
+            return "nativeplayer"
+        }
+        if (!!externalPlayerLink?.length && (
+            (!forcePlaybackMethod && torrentStreamingPlayback === PlaybackTorrentStreaming.ExternalPlayerLink) ||
+            (forcePlaybackMethod && forcePlaybackMethod === "externalPlayerLink")
+        )) {
+            return "externalPlayerLink"
+        }
+        return "default"
+    }, [externalPlayerLink, torrentStreamingPlayback, electronPlaybackMethod])
+
+    const handleStreamSelection = (params: ManualTorrentStreamSelectionProps) => {
+        const forcePlaybackMethod = getForcePlaybackMethod()
+        resetForcePlaybackMethod()
+        logger("TORRENT STREAM SELECTION").info("Starting torrent stream", params, getPlaybackType(forcePlaybackMethod))
+        mutate({
+            mediaId: params.mediaId,
+            episodeNumber: params.episodeNumber,
+            torrent: params.torrent,
+            aniDBEpisode: params.aniDBEpisode,
+            autoSelect: false,
+            fileIndex: params.chosenFileIndex ?? undefined,
+            playbackType: getPlaybackType(forcePlaybackMethod),
+            clientId: clientId || "",
+            batchEpisodeFiles: params.batchEpisodeFiles,
+            preload: params.preload,
+        }, {
+            onSuccess: () => {
+                // setLoadingState(null)
+            },
+            onError: () => {
+                setLoadingState(null)
+                setIsLoaded(false)
+            },
+        })
+    }
+
+    const handleAutoSelectStream = (params: AutoSelectTorrentStreamProps) => {
+        const forcePlaybackMethod = getForcePlaybackMethod()
+        resetForcePlaybackMethod()
+        logger("TORRENT STREAM SELECTION").info("Starting torrent stream (auto select)", params, getPlaybackType(forcePlaybackMethod))
+        mutate({
+            mediaId: params.mediaId,
+            episodeNumber: params.episodeNumber,
+            aniDBEpisode: params.aniDBEpisode,
+            autoSelect: true,
+            torrent: undefined,
+            playbackType: getPlaybackType(forcePlaybackMethod),
+            clientId: clientId || "",
+            preload: params.preload,
+        }, {
+            onError: () => {
+                setLoadingState(null)
+                setIsLoaded(false)
+                React.startTransition(() => {
+                    setCurrentSessionAutoSelect(false)
+                })
+            },
+        })
+    }
+
+    return {
+        isUsingNativePlayer: __isElectronDesktop__ && electronPlaybackMethod === ElectronPlaybackMethod.NativePlayer,
+        handleStreamSelection,
+        handleAutoSelectStream,
+        isPending,
+    }
+}
+
+export function useTorrentStreamListener() {
+    const serverStatus = useServerStatus()
+    const { currentPlaylist, nextPlaylistEpisode } = usePlaylistManager()
+    const { torrentstreamAutoplayInfo, autoplayNextTorrentstreamEpisode } = useTorrentstreamAutoplay()
+    const { autoPlayTorrent } = useAutoPlaySelectedTorrent()
+    const { handleStreamSelection, handleAutoSelectStream } = useHandleStartTorrentStream()
+    const torrentStream_autoSelectFile = useAtomValue(__torrentStream_autoSelectFileAtom)
+
+    const torrentStream_currentSessionAutoSelect = serverStatus?.torrentstreamSettings?.autoSelect
+
+    useWebsocketMessageListener({
+        type: WSEvents.TORRENTSTREAM_STATE,
+        onMessage: ({ state }: { state: TorrentStreamEvents }) => {
+            switch (state) {
+                case TorrentStreamEvents.PreloadNextStream:
+                    if (currentPlaylist && nextPlaylistEpisode) {
+                        const episode = nextPlaylistEpisode.episode
+                        if (!episode) return
+                        if (torrentStream_currentSessionAutoSelect) {
+                            logger("TORRENT STREAM LISTENER").info("Auto select is enabled, preparing next stream with auto select")
+                            handleAutoSelectStream({
+                                mediaId: episode.baseAnime?.id!,
+                                episodeNumber: episode.episodeNumber!,
+                                aniDBEpisode: episode.aniDBEpisode!,
+                                preload: true,
+                            })
+                            return
+                        } else if (
+                            autoPlayTorrent?.torrent?.isBatch &&
+                            torrentStream_autoSelectFile &&
+                            autoPlayTorrent.entry.mediaId === episode.baseAnime?.id
+                        ) {
+                            logger("TORRENT STREAM LISTENER")
+                                .info("Previous selection matches, preparing next stream by auto-selecting file for torrent stream")
+                            const batchParams = getBatchSelectionParams(autoPlayTorrent.batchFiles, episode.episodeNumber!, episode.aniDBEpisode!)
+                            handleStreamSelection({
+                                mediaId: episode.baseAnime?.id!,
+                                episodeNumber: episode.episodeNumber!,
+                                aniDBEpisode: episode.aniDBEpisode!,
+                                torrent: autoPlayTorrent.torrent,
+                                chosenFileIndex: batchParams.fileIndex,
+                                batchEpisodeFiles: batchParams.batchEpisodeFiles,
+                                preload: true,
+shivansh@Shivansh-MacBook seanime-main % cd ~/Downloads/seanime-main
+
+sed -n '1,180p' seanime-web/src/app/'(main)'/mediastream/page.tsx
+
+sed -n '180,480p' seanime-web/src/app/'(main)'/mediastream/page.tsx
+import { getServerBaseUrl } from "@/api/client/server-url"
+import { Anime_Episode, Mediastream_StreamType } from "@/api/generated/types"
+import { Mediastream_MediaContainer, Models_MediastreamSettings } from "@/api/generated/types"
+import { useGetAnimeEntry } from "@/api/hooks/anime_entries.hooks"
+import { useGetMediastreamSettings, useMediastreamShutdownTranscodeStream, useRequestMediastreamMediaContainer } from "@/api/hooks/mediastream.hooks"
+import { EpisodeGridItem } from "@/app/(main)/_features/anime/_components/episode-grid-item"
+import { MediaEpisodeInfoModal } from "@/app/(main)/_features/media/_components/media-episode-info-modal"
+import { EpisodePillsGrid } from "@/app/(main)/_features/video-core/_components/episode-pills-grid"
+import { useIsCodecSupported } from "@/app/(main)/_features/video-core/_lib/hooks"
+import { VideoCore, VideoCoreProvider } from "@/app/(main)/_features/video-core/video-core"
+import { vc_isFullscreen } from "@/app/(main)/_features/video-core/video-core-atoms.ts"
+import {
+    VideoCoreInlineHelpers,
+    VideoCoreInlineHelperUpdateProgressButton,
+    VideoCoreInlineLayout,
+} from "@/app/(main)/_features/video-core/video-core-inline-helpers"
+import { VideoCoreLifecycleState } from "@/app/(main)/_features/video-core/video-core.atoms"
+import { VideoCore_VideoSubtitleTrack } from "@/app/(main)/_features/video-core/video-core.atoms"
+import { useWebsocketMessageListener } from "@/app/(main)/_hooks/handle-websockets"
+import { useServerHMACAuth, useServerStatus } from "@/app/(main)/_hooks/use-server-status"
+import { useMediastreamCurrentFile } from "@/app/(main)/mediastream/_lib/mediastream.atoms"
+import { clientIdAtom } from "@/app/websocket-provider"
+import { LuffyError } from "@/components/shared/luffy-error"
+import { PageWrapper } from "@/components/shared/page-wrapper"
+
+import { Alert } from "@/components/ui/alert"
+import { Button, IconButton } from "@/components/ui/button"
+import { cn } from "@/components/ui/core/styling.ts"
+import { Modal } from "@/components/ui/modal"
+import { Separator } from "@/components/ui/separator"
+import { Skeleton } from "@/components/ui/skeleton"
+import { logger, useLatestFunction } from "@/lib/helpers/debug"
+import { usePathname, useRouter, useSearchParams } from "@/lib/navigation"
+import { WSEvents } from "@/lib/server/ws-events"
+import { useAtom, useAtomValue } from "jotai"
+import { atomWithStorage } from "jotai/utils"
+import uniq from "lodash/uniq"
+import { AnimatePresence, motion } from "motion/react"
+import React from "react"
+import { BiInfoCircle } from "react-icons/bi"
+import { BsFillGrid3X3GapFill } from "react-icons/bs"
+import { toast } from "sonner"
+
+const log = logger("MEDIASTREAM")
+
+// Episode view mode atom
+const __mediastream_episodeViewModeAtom = atomWithStorage<"list" | "grid">("sea-mediastream-episode-view-mode", "list")
+
+export default function Page() {
+    const vc_fullscreen = useAtomValue(vc_isFullscreen)
+    return (
+        <PageWrapper className={cn("px-4", vc_fullscreen && "z-[100]")}>
+            <MediastreamPage />
+        </PageWrapper>
+    )
+}
+
+function uuidv4(): string {
+    // @ts-ignore
+    return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) =>
+        (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16),
+    )
+}
+
+function MediastreamPage() {
+    const serverStatus = useServerStatus()
+    const { getHMACTokenQueryParam } = useServerHMACAuth()
+    const router = useRouter()
+    const pathname = usePathname()
+    const searchParams = useSearchParams()
+    const mediaId = searchParams.get("id")
+    const { data: animeEntry, isLoading: animeEntryLoading } = useGetAnimeEntry(mediaId)
+    const { filePath, setFilePath } = useMediastreamCurrentFile()
+
+    const { data: mediastreamSettings, isFetching: mediastreamSettingsLoading } = useGetMediastreamSettings(true)
+
+    const [episodeViewMode, setEpisodeViewMode] = useAtom(__mediastream_episodeViewModeAtom)
+
+    const media = animeEntry?.media
+    const episodes = React.useMemo(() => {
+        return animeEntry?.episodes ?? []
+    }, [animeEntry?.episodes])
+
+    // get current episode
+    const currentEpisode = React.useMemo(() => {
+        return episodes.find(ep => !!ep.localFile?.path && ep.localFile?.path === filePath)
+    }, [episodes, filePath])
+
+    const episodeNumber = currentEpisode?.episodeNumber ?? 1
+    const progress = animeEntry?.listData?.progress ?? 0
+
+    React.useEffect(() => {
+        if (!pathname.startsWith("/mediastream")) return
+        if (!mediaId || (!animeEntryLoading && !animeEntry) || (!animeEntryLoading && !!animeEntry && !filePath)) {
+            router.push("/")
+        }
+    }, [mediaId, pathname, animeEntry, animeEntryLoading, filePath])
+
+    const sessionId = useAtomValue(clientIdAtom)
+    const clientId = React.useMemo(() => sessionId ?? uuidv4(), [sessionId])
+
+    // stream state
+    const [streamType, setStreamType] = React.useState<Mediastream_StreamType>("transcode")
+    const [url, setUrl] = React.useState<string | null>(null)
+    const [urlFilePath, setUrlFilePath] = React.useState<string | undefined>(undefined)
+    const [playbackError, setPlaybackError] = React.useState<string | null>(null)
+
+    // HMAC tokens for browser-fetched media URLs
+    const [subsToken, setSubsToken] = React.useState("")
+    const [attToken, setAttToken] = React.useState("")
+    const [directToken, setDirectToken] = React.useState("")
+    const [transcodeToken, setTranscodeToken] = React.useState("")
+    React.useEffect(() => {
+        (async () => {
+            setSubsToken(await getHMACTokenQueryParam("/api/v1/mediastream/subs", "?"))
+            setAttToken(await getHMACTokenQueryParam("/api/v1/mediastream/att", "?"))
+            // the direct stream url already carries the file hash as a query param
+            setDirectToken(await getHMACTokenQueryParam("/api/v1/mediastream/direct", "&"))
+            setTranscodeToken(await getHMACTokenQueryParam("/api/v1/mediastream/transcode", "?"))
+        })()
+    }, [getHMACTokenQueryParam])
+
+
+    const playerRef = React.useRef<HTMLVideoElement | null>(null)
+    const prevUrlRef = React.useRef<string | undefined>(undefined)
+
+    // get codec support
+    const { isCodecSupported } = useIsCodecSupported()
+
+    // request media container
+    const {
+        data: mediaContainer,
+        isError: isMediaContainerError,
+        isPending: isMediaContainerPending,
+        refetch: refetchMediaContainer,
+    } = useRequestMediastreamMediaContainer({
+        path: filePath,
+        streamType: streamType,
+        clientId: clientId,
+    }, !!mediastreamSettings && !mediastreamSettingsLoading && !!filePath)
+
+    const { mutate: shutdownTranscode } = useMediastreamShutdownTranscodeStream()
+
+    // handle stream url change
+    const changeUrl = React.useCallback((newUrl: string | null, forFilePath?: string) => {
+        if (prevUrlRef.current !== newUrl) {
+            setPlaybackError(null)
+        }
+        setUrl(newUrl)
+        setUrlFilePath(newUrl ? forFilePath : undefined)
+        if (newUrl) {
+            prevUrlRef.current = newUrl
+        }
+    }, [])
+
+    // The stream url belongs to the file it was requested for.
+    // Selecting an episode changes the file path before the new container is requested, ignore the url
+    // until then so the player does not load the previous episode.
+    const activeUrl = (!!url && urlFilePath === filePath) ? url : null
+
+    // process media container
+    React.useEffect(() => {
+        if (isMediaContainerPending || !mediaContainer) {
+            changeUrl(null)
+            return
+        }
+
+        log.info("Media container changed", mediaContainer)
+
+        const codecSupported = isCodecSupported(mediaContainer?.mediaInfo?.mimeCodec ?? "")
+        log.info("Is codec supported?", codecSupported)
+
+        // switch to direct play if supported
+        if (mediaContainer.streamType === "transcode") {
+            if (!codecSupported && mediastreamSettings?.directPlayOnly) {
+                toast.warning("Codec not supported for direct play")
+                changeUrl(null)
+                return
+            }
+
+
+            if (codecSupported && (!mediastreamSettings?.disableAutoSwitchToDirectPlay || mediastreamSettings?.directPlayOnly)) {
+                log.info("Switching to direct play")
+                setStreamType("direct")
+                changeUrl(null)
+                return
+            }
+        }
+
+        // switch to transcode if direct play not supported
+        if (mediaContainer.streamType === "direct") {
+            if (!codecSupported) {
+                log.warning("Codec not supported for direct play, switching to transcode")
+                setStreamType("transcode")
+                changeUrl(null)
+                return
+            }
+        }
+
+        if (mediaContainer.streamUrl) {
+            let _newUrl = `${getServerBaseUrl()}${mediaContainer.streamUrl}`
+            // Append HMAC token for direct play URLs
+            if (mediaContainer.streamType === "direct" && directToken) {
+                _newUrl += directToken
+            } else if (mediaContainer.streamType === "transcode" && transcodeToken) {
+                _newUrl += transcodeToken
+            }
+            log.info("Setting stream URL", _newUrl)
+            changeUrl(_newUrl, filePath)
+        } else {
+            changeUrl(null)
+        }
+
+    }, [mediaContainer, isMediaContainerPending, mediastreamSettings, isCodecSupported, directToken])
+
+
+    // handle fatal errors
+    const onFatalError = React.useCallback((error: any) => {
+        log.error("Fatal error", error)
+        if (mediaContainer?.streamType === "transcode") {
+            shutdownTranscode()
+        }
+        setPlaybackError("Playback error triggered. Please try again or switch stream type.")
+        changeUrl(null) // reset url
+        toast.error("Playback error occurred")
+    }, [mediaContainer?.streamType])
+
+
+    // listen for shutdown stream event
+    useWebsocketMessageListener<string | null>({
+        type: WSEvents.MEDIASTREAM_SHUTDOWN_STREAM,
+        onMessage: msg => {
+            if (msg) toast.error(msg)
+            log.warning("Shutdown stream event received")
+            changeUrl(null)
+        },
+    })
+
+
+    // subtitles
+    const subtitleTracks = React.useMemo<VideoCore_VideoSubtitleTrack[] | undefined>(() => {
+        if (!mediaContainer?.mediaInfo?.subtitles) return undefined
+        return mediaContainer.mediaInfo.subtitles.map((sub: any) => ({
+            index: sub.index,
+            label: sub.title || sub.language || `Track ${sub.index}`,
+            language: sub.language || "eng",
+            src: `${getServerBaseUrl()}/api/v1/mediastream/subs` + sub.link + subsToken,
+            content: undefined, // Content fetching handled by VideoCore if needed, but src is preferred
+            type: sub.extension,
+            default: sub.isDefault,
+            useLibassRenderer: true,
+        }))
+    }, [mediaContainer?.mediaInfo?.subtitles, subsToken])
+
+    // navigation helpers
+    const goToEpisode = useLatestFunction((ep: Anime_Episode) => {
+        if (ep.localFile?.path) {
+            setFilePath(ep.localFile.path)
+            setStreamType("transcode") // reset to transcode if user prefers direct, the effect will switch it back
+        }
+    })
+
+    const onPlayEpisode = (action: "next" | "previous") => {
+        if (!currentEpisode) return
+        const currentIndex = episodes.findIndex(e => e.localFile?.path === currentEpisode.localFile?.path)
+        if (currentIndex === -1) return
+
+        let targetEp = action === "next" ? episodes[currentIndex + 1] : episodes[currentIndex - 1]
+
+        if (targetEp?.localFile?.path) {
+            goToEpisode(targetEp)
+        }
+    }
+
+    const state = React.useMemo(() => {
+        return {
+            active: true,
+            playbackInfo: (activeUrl && filePath) ? {
+                id: filePath,
+                playbackType: "localfile",
+                streamUrl: activeUrl,
+                media: media!,
+                episode: currentEpisode,
+                localFile: currentEpisode?.localFile,
+                streamType: mediaContainer?.streamType === "direct" && mediaContainer?.mediaInfo?.extension === "mkv"
+                    ? "native"
+                    : (mediaContainer?.streamType === "transcode" ? "hls" : "native"), // Simple heuristic
+                subtitleTracks: subtitleTracks,
+                libassFonts: mediaContainer?.mediaInfo?.fonts?.map(name => ({ src: `${getServerBaseUrl()}/api/v1/mediastream/att/${name}${attToken}` })) || [],
+                initialState: undefined,
+            } : null,
+            loadingState: !activeUrl ? "Loading stream..." : null,
+            playbackError: playbackError,
+        } satisfies VideoCoreLifecycleState
+    }, [activeUrl, filePath, media, currentEpisode, mediaContainer, playbackError, subtitleTracks, attToken])
+
+    if (animeEntryLoading || !animeEntry?.media) return <div className="px-4 lg:px-8 space-y-4">
+        <div className="flex gap-4 items-center relative">
+            <Skeleton className="h-12" />
+        </div>
+        <div className="grid 2xl:grid-cols-[1fr,450px] gap-4 xl:gap-4">
+            <div className="w-full min-h-[70dvh] relative">
+                <Skeleton className="h-full w-full absolute" />
+            </div>
+            <Skeleton className="hidden 2xl:block relative h-[78dvh] overflow-y-auto pr-4 pt-0" />
+        </div>
+    </div>
+
+    return (
+        <>
+            <VideoCoreInlineHelpers
+                playerRef={playerRef}
+                currentEpisodeNumber={episodeNumber}
+                currentProgress={progress}
+                media={media!}
+                url={activeUrl}
+            />
+
+            <VideoCoreInlineLayout
+                mediaId={mediaId ? Number(mediaId) : undefined}
+                currentEpisodeNumber={episodeNumber}
+                title={media?.title?.userPreferred}
+                episodes={episodes}
+                loadingEpisodeList={animeEntryLoading}
+                hideBackButton={false}
+                rightHeaderActions={<>
+                    <VideoCoreInlineHelperUpdateProgressButton />
+                    <MediastreamPlaybackInfo
+                        mediaContainer={mediaContainer}
+                        isCodecSupported={isCodecSupported}
+                        streamType={streamType}
+                        setStreamType={setStreamType}
+                        mediastreamSettings={mediastreamSettings}
+                    />
+                    <IconButton
+                        size="sm"
+                        intent={episodeViewMode === "list" ? "gray-basic" : "white-subtle"}
+                        icon={<BsFillGrid3X3GapFill />}
+                        onClick={() => setEpisodeViewMode(prev => prev === "list" ? "grid" : "list")}
+                        title={episodeViewMode === "list" ? "Switch to grid view" : "Switch to list view"}
+                    />
+                </>}
+                mediaPlayer={
+                    <VideoCoreProvider id="mediastream" key={filePath}>
+                        <div className="w-full aspect-video mx-auto border rounded-lg overflow-hidden bg-black relative z-20">
+                            {isMediaContainerError || playbackError ? (
+                                <div className="flex flex-col items-center justify-center h-full w-full">
+                                    <LuffyError title="Playback Error">
+                                        {playbackError || "Could not load media container."}
+                                    </LuffyError>
+                                    <button
+                                        onClick={() => refetchMediaContainer()}
+                                        className="mt-4 px-4 py-2 bg-gray-800 text-white rounded hover:bg-gray-700"
+                                    >
+                                        Retry
+                                    </button>
+                                </div>
+                            ) : (
+                                <VideoCore
+                                    id="mediastream"
+                                    mRef={playerRef}
+                                    state={state}
+                                    inline
+                                    onError={onFatalError}
+                                    onHlsFatalError={(e) => onFatalError(e)}
+                                    onTerminateStream={() => {
+                                        changeUrl(null)
+                                        router.back() // or just stop?
+                                    }}
+                                    onPlayEpisode={onPlayEpisode}
+                                />
+                            )}
+                        </div>
+                    </VideoCoreProvider>
+                }
+                episodeList={<>
+                    <AnimatePresence mode="wait" initial={false}>
+                        {episodeViewMode === "list" ? (
+                            <motion.div
+                                key="list-view"
+                                initial={{ opacity: 0, y: 20 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -20 }}
+                                transition={{ duration: 0.3 }}
+                                className="space-y-3"
+                            >
+                                {episodes?.map((episode, idx) => {
+                                    const isSelected = episode.localFile?.path === filePath
+                                    return (
+                                        <EpisodeGridItem
+                                            key={idx + (episode.episodeTitle || "") + episode.episodeNumber}
+                                            media={media!}
+                                            onClick={() => {
+                                                if (episode.localFile?.path) {
+                                                    setFilePath(episode.localFile.path)
+                                                } else {
+                                                    toast.error("File path not found for this episode")
+                                                }
+                                            }}
+                                            title={media?.format === "MOVIE" ? "Complete movie" : `Episode ${episode.episodeNumber}`}
+                                            episodeTitle={episode.episodeTitle}
+                                            description={episode.episodeMetadata?.summary}
+                                            image={episode.episodeMetadata?.image}
+                                            isSelected={isSelected}
+                                            isWatched={progress ? episode.episodeNumber <= progress : undefined}
+                                            className="flex-none w-full"
+                                            isFiller={episode.episodeMetadata?.isFiller}
+                                            episodeNumber={episode.episodeNumber}
+                                            watchedProgress={progress}
+                                            progressNumber={episode.episodeNumber}
+                                            action={<>
+                                                <MediaEpisodeInfoModal
+                                                    title={media?.format === "MOVIE" ? "Complete movie" : `Episode ${episode.episodeNumber}`}
+                                                    image={episode.episodeMetadata?.image}
+                                                    episodeTitle={episode.episodeTitle}
+                                                    summary={episode.episodeMetadata?.summary}
+                                                    filename={episode.localFile?.name}
+                                                />
+                                            </>}
+                                        />
+                                    )
+                                })}
+                                {!!episodes?.length && <p className="text-center text-[--muted] py-2">End</p>}
+                            </motion.div>
+                        ) : (
+                            <EpisodePillsGrid
+                                key="grid-view"
+                                episodes={episodes?.map(ep => ({
+                                    id: ep.localFile?.path || "",
+                                    number: ep.episodeNumber,
+                                    title: ep.episodeTitle,
+                                    isFiller: ep.episodeMetadata?.isFiller,
+                                })) || []}
+                                currentEpisodeNumber={episodeNumber}
+                                onEpisodeSelect={(num, id) => {
+                                    const ep = episodes.find(e => e.localFile?.path === id)
+                                    if (ep?.localFile?.path) {
+                                        setFilePath(ep.localFile.path)
+                                    }
+                                }}
+                                progress={progress}
+                                getEpisodeId={(ep) => `episode-${ep.id}`}
+                            />
+                        )}
+                    </AnimatePresence>
+                </>}
+            />
+        </>
+    )
+}
+
+type MediastreamPlaybackInfoProps = {
+    mediaContainer: Mediastream_MediaContainer | undefined
+    isCodecSupported: (codec: string) => boolean
+    streamType: Mediastream_StreamType
+    setStreamType: (type: Mediastream_StreamType) => void
+    mediastreamSettings: Models_MediastreamSettings | undefined
+}
+
+function MediastreamPlaybackInfo({
+    mediaContainer,
+    isCodecSupported,
+    streamType,
+    setStreamType,
+    mediastreamSettings,
+}: MediastreamPlaybackInfoProps) {
+
+    if (!mediaContainer) return null
+
+    return (
+        <Modal
+            title="Playback"
+            trigger={
+                <Button leftIcon={<BiInfoCircle />} className="rounded-full" intent="gray-basic" size="sm">
+                    Playback info
+                </Button>
+            }
+            contentClass="sm:rounded-3xl"
+        >
+            <div className="space-y-4">
+                <p className="tracking-wide text-sm text-[--muted] break-all">
+shivansh@Shivansh-MacBook seanime-main % cd ~/Downloads/seanime-main
+
+grep -RniE "Client.*Event|SendEventToClient|SendEventTo\(|Plugin.*Event|useWebsocket.*Listener|useWebsocketPlugin" \
+  seanime-web/src/app/'(main)'/_features/plugin \
+  seanime-web/src/app/websocket-provider.tsx \
+  internal/plugin/ui | head -300
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:2:	import { useWebsocketPluginMessageListener, useWebsocketSender } from "@/app/(main)/_hooks/handle-websockets"
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:5:export enum PluginClientEvents {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:53:export enum PluginServerEvents {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:107:export type Plugin_Client_RenderTrayEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:110:export function usePluginSendRenderTrayEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:113:    const sendRenderTrayEvent = useCallback((payload: Plugin_Client_RenderTrayEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:114:        sendPluginMessage(PluginClientEvents.RenderTray, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:122:export type Plugin_Client_ListTrayIconsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:125:export function usePluginSendListTrayIconsEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:128:    const sendListTrayIconsEvent = useCallback((payload: Plugin_Client_ListTrayIconsEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:129:        sendPluginMessage(PluginClientEvents.ListTrayIcons, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:137:export type Plugin_Client_TrayOpenedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:140:export function usePluginSendTrayOpenedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:143:    const sendTrayOpenedEvent = useCallback((payload: Plugin_Client_TrayOpenedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:144:        sendPluginMessage(PluginClientEvents.TrayOpened, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:152:export type Plugin_Client_TrayClosedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:155:export function usePluginSendTrayClosedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:158:    const sendTrayClosedEvent = useCallback((payload: Plugin_Client_TrayClosedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:159:        sendPluginMessage(PluginClientEvents.TrayClosed, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:167:export type Plugin_Client_TrayClickedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:170:export function usePluginSendTrayClickedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:173:    const sendTrayClickedEvent = useCallback((payload: Plugin_Client_TrayClickedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:174:        sendPluginMessage(PluginClientEvents.TrayClicked, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:182:export type Plugin_Client_WebviewSidebarMountedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:185:export function usePluginSendWebviewSidebarMountedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:188:    const sendWebviewSidebarMountedEvent = useCallback((payload: Plugin_Client_WebviewSidebarMountedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:189:        sendPluginMessage(PluginClientEvents.WebviewSidebarMounted, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:197:export type Plugin_Client_WebviewMountedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:201:export function usePluginSendWebviewMountedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:204:    const sendWebviewMountedEvent = useCallback((payload: Plugin_Client_WebviewMountedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:205:        sendPluginMessage(PluginClientEvents.WebviewMounted, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:213:export type Plugin_Client_WebviewLoadedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:217:export function usePluginSendWebviewLoadedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:220:    const sendWebviewLoadedEvent = useCallback((payload: Plugin_Client_WebviewLoadedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:221:        sendPluginMessage(PluginClientEvents.WebviewLoaded, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:229:export type Plugin_Client_WebviewUnmountedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:233:export function usePluginSendWebviewUnmountedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:236:    const sendWebviewUnmountedEvent = useCallback((payload: Plugin_Client_WebviewUnmountedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:237:        sendPluginMessage(PluginClientEvents.WebviewUnmounted, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:245:export type Plugin_Client_WebviewPostMessageEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:251:export function usePluginSendWebviewPostMessageEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:254:    const sendWebviewPostMessageEvent = useCallback((payload: Plugin_Client_WebviewPostMessageEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:255:        sendPluginMessage(PluginClientEvents.WebviewPostMessage, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:263:export type Plugin_Client_ListCommandPalettesEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:266:export function usePluginSendListCommandPalettesEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:269:    const sendListCommandPalettesEvent = useCallback((payload: Plugin_Client_ListCommandPalettesEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:270:        sendPluginMessage(PluginClientEvents.ListCommandPalettes, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:278:export type Plugin_Client_CommandPaletteOpenedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:281:export function usePluginSendCommandPaletteOpenedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:284:    const sendCommandPaletteOpenedEvent = useCallback((payload: Plugin_Client_CommandPaletteOpenedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:285:        sendPluginMessage(PluginClientEvents.CommandPaletteOpened, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:293:export type Plugin_Client_CommandPaletteClosedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:296:export function usePluginSendCommandPaletteClosedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:299:    const sendCommandPaletteClosedEvent = useCallback((payload: Plugin_Client_CommandPaletteClosedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:300:        sendPluginMessage(PluginClientEvents.CommandPaletteClosed, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:308:export type Plugin_Client_RenderCommandPaletteEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:311:export function usePluginSendRenderCommandPaletteEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:314:    const sendRenderCommandPaletteEvent = useCallback((payload: Plugin_Client_RenderCommandPaletteEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:315:        sendPluginMessage(PluginClientEvents.RenderCommandPalette, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:323:export type Plugin_Client_CommandPaletteInputEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:327:export function usePluginSendCommandPaletteInputEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:330:    const sendCommandPaletteInputEvent = useCallback((payload: Plugin_Client_CommandPaletteInputEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:331:        sendPluginMessage(PluginClientEvents.CommandPaletteInput, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:339:export type Plugin_Client_CommandPaletteItemSelectedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:343:export function usePluginSendCommandPaletteItemSelectedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:346:    const sendCommandPaletteItemSelectedEvent = useCallback((payload: Plugin_Client_CommandPaletteItemSelectedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:347:        sendPluginMessage(PluginClientEvents.CommandPaletteItemSelected, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:355:export type Plugin_Client_ActionRenderAnimePageButtonsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:358:export function usePluginSendActionRenderAnimePageButtonsEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:361:    const sendActionRenderAnimePageButtonsEvent = useCallback((payload: Plugin_Client_ActionRenderAnimePageButtonsEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:362:        sendPluginMessage(PluginClientEvents.ActionRenderAnimePageButtons, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:370:export type Plugin_Client_ActionRenderAnimePageDropdownItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:373:export function usePluginSendActionRenderAnimePageDropdownItemsEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:376:    const sendActionRenderAnimePageDropdownItemsEvent = useCallback((payload: Plugin_Client_ActionRenderAnimePageDropdownItemsEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:377:        sendPluginMessage(PluginClientEvents.ActionRenderAnimePageDropdownItems, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:385:export type Plugin_Client_ActionRenderMangaPageButtonsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:388:export function usePluginSendActionRenderMangaPageButtonsEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:391:    const sendActionRenderMangaPageButtonsEvent = useCallback((payload: Plugin_Client_ActionRenderMangaPageButtonsEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:392:        sendPluginMessage(PluginClientEvents.ActionRenderMangaPageButtons, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:400:export type Plugin_Client_ActionRenderMangaPageDropdownItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:403:export function usePluginSendActionRenderMangaPageDropdownItemsEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:406:    const sendActionRenderMangaPageDropdownItemsEvent = useCallback((payload: Plugin_Client_ActionRenderMangaPageDropdownItemsEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:407:        sendPluginMessage(PluginClientEvents.ActionRenderMangaPageDropdownItems, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:415:export type Plugin_Client_ActionRenderMangaLibraryDropdownItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:418:export function usePluginSendActionRenderMangaLibraryDropdownItemsEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:421:    const sendActionRenderMangaLibraryDropdownItemsEvent = useCallback((payload: Plugin_Client_ActionRenderMangaLibraryDropdownItemsEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:422:        sendPluginMessage(PluginClientEvents.ActionRenderMangaLibraryDropdownItems, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:430:export type Plugin_Client_ActionRenderMediaCardContextMenuItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:433:export function usePluginSendActionRenderMediaCardContextMenuItemsEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:436:    const sendActionRenderMediaCardContextMenuItemsEvent = useCallback((payload: Plugin_Client_ActionRenderMediaCardContextMenuItemsEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:437:        sendPluginMessage(PluginClientEvents.ActionRenderMediaCardContextMenuItems, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:445:export type Plugin_Client_ActionRenderAnimeLibraryDropdownItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:448:export function usePluginSendActionRenderAnimeLibraryDropdownItemsEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:451:    const sendActionRenderAnimeLibraryDropdownItemsEvent = useCallback((payload: Plugin_Client_ActionRenderAnimeLibraryDropdownItemsEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:452:        sendPluginMessage(PluginClientEvents.ActionRenderAnimeLibraryDropdownItems, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:460:export type Plugin_Client_ActionRenderEpisodeCardContextMenuItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:463:export function usePluginSendActionRenderEpisodeCardContextMenuItemsEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:466:    const sendActionRenderEpisodeCardContextMenuItemsEvent = useCallback((payload: Plugin_Client_ActionRenderEpisodeCardContextMenuItemsEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:467:        sendPluginMessage(PluginClientEvents.ActionRenderEpisodeCardContextMenuItems, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:475:export type Plugin_Client_ActionRenderEpisodeGridItemMenuItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:478:export function usePluginSendActionRenderEpisodeGridItemMenuItemsEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:481:    const sendActionRenderEpisodeGridItemMenuItemsEvent = useCallback((payload: Plugin_Client_ActionRenderEpisodeGridItemMenuItemsEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:482:        sendPluginMessage(PluginClientEvents.ActionRenderEpisodeGridItemMenuItems, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:490:export type Plugin_Client_ActionClickedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:495:export function usePluginSendActionClickedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:498:    const sendActionClickedEvent = useCallback((payload: Plugin_Client_ActionClickedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:499:        sendPluginMessage(PluginClientEvents.ActionClicked, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:507:export type Plugin_Client_AnimeEntryEpisodeTabsRenderEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:511:export function usePluginSendAnimeEntryEpisodeTabsRenderEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:514:    const sendAnimeEntryEpisodeTabsRenderEvent = useCallback((payload: Plugin_Client_AnimeEntryEpisodeTabsRenderEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:515:        sendPluginMessage(PluginClientEvents.AnimeEntryEpisodeTabsRender, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:523:export type Plugin_Client_AnimeEntryEpisodeTabOpenEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:527:export function usePluginSendAnimeEntryEpisodeTabOpenEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:530:    const sendAnimeEntryEpisodeTabOpenEvent = useCallback((payload: Plugin_Client_AnimeEntryEpisodeTabOpenEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:531:        sendPluginMessage(PluginClientEvents.AnimeEntryEpisodeTabOpen, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:539:export type Plugin_Client_AnimeEntryEpisodeTabSelectEpisodeEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:546:export function usePluginSendAnimeEntryEpisodeTabSelectEpisodeEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:549:    const sendAnimeEntryEpisodeTabSelectEpisodeEvent = useCallback((payload: Plugin_Client_AnimeEntryEpisodeTabSelectEpisodeEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:550:        sendPluginMessage(PluginClientEvents.AnimeEntryEpisodeTabSelectEpisode, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:558:export type Plugin_Client_AnimeEntryEpisodeTabStateChangedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:562:export function usePluginSendAnimeEntryEpisodeTabStateChangedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:565:    const sendAnimeEntryEpisodeTabStateChangedEvent = useCallback((payload: Plugin_Client_AnimeEntryEpisodeTabStateChangedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:566:        sendPluginMessage(PluginClientEvents.AnimeEntryEpisodeTabStateChanged, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:574:export type Plugin_Client_FormSubmittedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:579:export function usePluginSendFormSubmittedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:582:    const sendFormSubmittedEvent = useCallback((payload: Plugin_Client_FormSubmittedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:583:        sendPluginMessage(PluginClientEvents.FormSubmitted, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:591:export type Plugin_Client_ScreenChangedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:596:export function usePluginSendScreenChangedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:599:    const sendScreenChangedEvent = useCallback((payload: Plugin_Client_ScreenChangedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:600:        sendPluginMessage(PluginClientEvents.ScreenChanged, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:608:export type Plugin_Client_EventHandlerTriggeredEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:613:export function usePluginSendEventHandlerTriggeredEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:616:    const sendEventHandlerTriggeredEvent = useCallback((payload: Plugin_Client_EventHandlerTriggeredEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:617:        sendPluginMessage(PluginClientEvents.EventHandlerTriggered, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:625:export type Plugin_Client_FieldRefSendValueEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:630:export function usePluginSendFieldRefSendValueEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:633:    const sendFieldRefSendValueEvent = useCallback((payload: Plugin_Client_FieldRefSendValueEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:634:        sendPluginMessage(PluginClientEvents.FieldRefSendValue, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:642:export type Plugin_Client_DOMQueryResultEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:647:export function usePluginSendDOMQueryResultEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:650:    const sendDOMQueryResultEvent = useCallback((payload: Plugin_Client_DOMQueryResultEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:651:        sendPluginMessage(PluginClientEvents.DOMQueryResult, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:659:export type Plugin_Client_DOMQueryOneResultEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:664:export function usePluginSendDOMQueryOneResultEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:667:    const sendDOMQueryOneResultEvent = useCallback((payload: Plugin_Client_DOMQueryOneResultEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:668:        sendPluginMessage(PluginClientEvents.DOMQueryOneResult, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:676:export type Plugin_Client_DOMObserveResultEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:681:export function usePluginSendDOMObserveResultEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:684:    const sendDOMObserveResultEvent = useCallback((payload: Plugin_Client_DOMObserveResultEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:685:        sendPluginMessage(PluginClientEvents.DOMObserveResult, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:693:export type Plugin_Client_DOMStopObserveEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:697:export function usePluginSendDOMStopObserveEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:700:    const sendDOMStopObserveEvent = useCallback((payload: Plugin_Client_DOMStopObserveEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:701:        sendPluginMessage(PluginClientEvents.DOMStopObserve, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:709:export type Plugin_Client_DOMCreateResultEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:714:export function usePluginSendDOMCreateResultEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:717:    const sendDOMCreateResultEvent = useCallback((payload: Plugin_Client_DOMCreateResultEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:718:        sendPluginMessage(PluginClientEvents.DOMCreateResult, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:726:export type Plugin_Client_DOMElementUpdatedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:733:export function usePluginSendDOMElementUpdatedEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:736:    const sendDOMElementUpdatedEvent = useCallback((payload: Plugin_Client_DOMElementUpdatedEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:737:        sendPluginMessage(PluginClientEvents.DOMElementUpdated, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:745:export type Plugin_Client_DOMEventTriggeredEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:751:export function usePluginSendDOMEventTriggeredEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:754:    const sendDOMEventTriggeredEvent = useCallback((payload: Plugin_Client_DOMEventTriggeredEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:755:        sendPluginMessage(PluginClientEvents.DOMEventTriggered, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:763:export type Plugin_Client_DOMReadyEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:766:export function usePluginSendDOMReadyEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:769:    const sendDOMReadyEvent = useCallback((payload: Plugin_Client_DOMReadyEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:770:        sendPluginMessage(PluginClientEvents.DOMReady, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:778:export type Plugin_Client_DOMMainTabReadyEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:781:export function usePluginSendDOMMainTabReadyEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:784:    const sendDOMMainTabReadyEvent = useCallback((payload: Plugin_Client_DOMMainTabReadyEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:785:        sendPluginMessage(PluginClientEvents.DOMMainTabReady, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:793:export type Plugin_Client_DOMViewportSizeEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:798:export function usePluginSendDOMViewportSizeEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:801:    const sendDOMViewportSizeEvent = useCallback((payload: Plugin_Client_DOMViewportSizeEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:802:        sendPluginMessage(PluginClientEvents.DOMViewportSize, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:810:export type Plugin_Client_MarketplaceGetURLResultEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:815:export function usePluginSendMarketplaceGetURLResultEvent() {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:818:    const sendMarketplaceGetURLResultEvent = useCallback((payload: Plugin_Client_MarketplaceGetURLResultEventPayload, extensionID?: string) => {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:819:        sendPluginMessage(PluginClientEvents.MarketplaceGetURLResult, payload, extensionID)
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:831:export type Plugin_Server_TrayUpdatedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:835:export function usePluginListenTrayUpdatedEvent(cb: (payload: Plugin_Server_TrayUpdatedEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:836:    return useWebsocketPluginMessageListener<Plugin_Server_TrayUpdatedEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:838:        type: PluginServerEvents.TrayUpdated,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:843:export type Plugin_Server_TrayIconEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:856:export function usePluginListenTrayIconEvent(cb: (payload: Plugin_Server_TrayIconEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:857:    return useWebsocketPluginMessageListener<Plugin_Server_TrayIconEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:859:        type: PluginServerEvents.TrayIcon,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:864:export type Plugin_Server_TrayBadgeUpdatedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:869:export function usePluginListenTrayBadgeUpdatedEvent(cb: (payload: Plugin_Server_TrayBadgeUpdatedEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:870:    return useWebsocketPluginMessageListener<Plugin_Server_TrayBadgeUpdatedEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:872:        type: PluginServerEvents.TrayBadgeUpdated,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:877:export type Plugin_Server_TrayOpenEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:881:export function usePluginListenTrayOpenEvent(cb: (payload: Plugin_Server_TrayOpenEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:882:    return useWebsocketPluginMessageListener<Plugin_Server_TrayOpenEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:884:        type: PluginServerEvents.TrayOpen,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:889:export type Plugin_Server_TrayCloseEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:893:export function usePluginListenTrayCloseEvent(cb: (payload: Plugin_Server_TrayCloseEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:894:    return useWebsocketPluginMessageListener<Plugin_Server_TrayCloseEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:896:        type: PluginServerEvents.TrayClose,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:901:export type Plugin_Server_WebviewUpdatedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:906:export function usePluginListenWebviewUpdatedEvent(cb: (payload: Plugin_Server_WebviewUpdatedEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:907:    return useWebsocketPluginMessageListener<Plugin_Server_WebviewUpdatedEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:909:        type: PluginServerEvents.WebviewUpdated,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:914:export type Plugin_Server_WebviewIframeEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:921:export function usePluginListenWebviewIframeEvent(cb: (payload: Plugin_Server_WebviewIframeEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:922:    return useWebsocketPluginMessageListener<Plugin_Server_WebviewIframeEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:924:        type: PluginServerEvents.WebviewIframe,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:929:export type Plugin_Server_WebviewSidebarEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:934:export function usePluginListenWebviewSidebarEvent(cb: (payload: Plugin_Server_WebviewSidebarEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:935:    return useWebsocketPluginMessageListener<Plugin_Server_WebviewSidebarEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:937:        type: PluginServerEvents.WebviewSidebar,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:942:export type Plugin_Server_WebviewSyncStateEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:949:export function usePluginListenWebviewSyncStateEvent(cb: (payload: Plugin_Server_WebviewSyncStateEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:950:    return useWebsocketPluginMessageListener<Plugin_Server_WebviewSyncStateEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:952:        type: PluginServerEvents.WebviewSyncState,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:957:export type Plugin_Server_WebviewCloseEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:961:export function usePluginListenWebviewCloseEvent(cb: (payload: Plugin_Server_WebviewCloseEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:962:    return useWebsocketPluginMessageListener<Plugin_Server_WebviewCloseEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:964:        type: PluginServerEvents.WebviewClose,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:969:export type Plugin_Server_CommandPaletteInfoEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:974:export function usePluginListenCommandPaletteInfoEvent(cb: (payload: Plugin_Server_CommandPaletteInfoEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:975:    return useWebsocketPluginMessageListener<Plugin_Server_CommandPaletteInfoEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:977:        type: PluginServerEvents.CommandPaletteInfo,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:982:export type Plugin_Server_CommandPaletteUpdatedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:987:export function usePluginListenCommandPaletteUpdatedEvent(cb: (payload: Plugin_Server_CommandPaletteUpdatedEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:988:    return useWebsocketPluginMessageListener<Plugin_Server_CommandPaletteUpdatedEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:990:        type: PluginServerEvents.CommandPaletteUpdated,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:995:export type Plugin_Server_CommandPaletteOpenEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:998:export function usePluginListenCommandPaletteOpenEvent(cb: (payload: Plugin_Server_CommandPaletteOpenEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:999:    return useWebsocketPluginMessageListener<Plugin_Server_CommandPaletteOpenEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1001:        type: PluginServerEvents.CommandPaletteOpen,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1006:export type Plugin_Server_CommandPaletteCloseEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1009:export function usePluginListenCommandPaletteCloseEvent(cb: (payload: Plugin_Server_CommandPaletteCloseEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1010:    return useWebsocketPluginMessageListener<Plugin_Server_CommandPaletteCloseEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1012:        type: PluginServerEvents.CommandPaletteClose,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1017:export type Plugin_Server_CommandPaletteGetInputEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1020:export function usePluginListenCommandPaletteGetInputEvent(cb: (payload: Plugin_Server_CommandPaletteGetInputEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1021:    return useWebsocketPluginMessageListener<Plugin_Server_CommandPaletteGetInputEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1023:        type: PluginServerEvents.CommandPaletteGetInput,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1028:export type Plugin_Server_CommandPaletteSetInputEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1032:export function usePluginListenCommandPaletteSetInputEvent(cb: (payload: Plugin_Server_CommandPaletteSetInputEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1033:    return useWebsocketPluginMessageListener<Plugin_Server_CommandPaletteSetInputEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1035:        type: PluginServerEvents.CommandPaletteSetInput,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1040:export type Plugin_Server_ActionRenderAnimePageButtonsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1044:export function usePluginListenActionRenderAnimePageButtonsEvent(cb: (payload: Plugin_Server_ActionRenderAnimePageButtonsEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1045:    return useWebsocketPluginMessageListener<Plugin_Server_ActionRenderAnimePageButtonsEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1047:        type: PluginServerEvents.ActionRenderAnimePageButtons,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1052:export type Plugin_Server_ActionRenderAnimePageDropdownItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1056:export function usePluginListenActionRenderAnimePageDropdownItemsEvent(cb: (payload: Plugin_Server_ActionRenderAnimePageDropdownItemsEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1057:    return useWebsocketPluginMessageListener<Plugin_Server_ActionRenderAnimePageDropdownItemsEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1059:        type: PluginServerEvents.ActionRenderAnimePageDropdownItems,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1064:export type Plugin_Server_ActionRenderMangaPageButtonsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1068:export function usePluginListenActionRenderMangaPageButtonsEvent(cb: (payload: Plugin_Server_ActionRenderMangaPageButtonsEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1069:    return useWebsocketPluginMessageListener<Plugin_Server_ActionRenderMangaPageButtonsEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1071:        type: PluginServerEvents.ActionRenderMangaPageButtons,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1076:export type Plugin_Server_ActionRenderMangaPageDropdownItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1080:export function usePluginListenActionRenderMangaPageDropdownItemsEvent(cb: (payload: Plugin_Server_ActionRenderMangaPageDropdownItemsEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1081:    return useWebsocketPluginMessageListener<Plugin_Server_ActionRenderMangaPageDropdownItemsEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1083:        type: PluginServerEvents.ActionRenderMangaPageDropdownItems,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1088:export type Plugin_Server_ActionRenderMangaLibraryDropdownItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1092:export function usePluginListenActionRenderMangaLibraryDropdownItemsEvent(cb: (payload: Plugin_Server_ActionRenderMangaLibraryDropdownItemsEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1093:    return useWebsocketPluginMessageListener<Plugin_Server_ActionRenderMangaLibraryDropdownItemsEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1095:        type: PluginServerEvents.ActionRenderMangaLibraryDropdownItems,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1100:export type Plugin_Server_ActionRenderMediaCardContextMenuItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1104:export function usePluginListenActionRenderMediaCardContextMenuItemsEvent(cb: (payload: Plugin_Server_ActionRenderMediaCardContextMenuItemsEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1105:    return useWebsocketPluginMessageListener<Plugin_Server_ActionRenderMediaCardContextMenuItemsEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1107:        type: PluginServerEvents.ActionRenderMediaCardContextMenuItems,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1112:export type Plugin_Server_ActionRenderEpisodeCardContextMenuItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1116:export function usePluginListenActionRenderEpisodeCardContextMenuItemsEvent(cb: (payload: Plugin_Server_ActionRenderEpisodeCardContextMenuItemsEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1117:    return useWebsocketPluginMessageListener<Plugin_Server_ActionRenderEpisodeCardContextMenuItemsEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1119:        type: PluginServerEvents.ActionRenderEpisodeCardContextMenuItems,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1124:export type Plugin_Server_ActionRenderEpisodeGridItemMenuItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1128:export function usePluginListenActionRenderEpisodeGridItemMenuItemsEvent(cb: (payload: Plugin_Server_ActionRenderEpisodeGridItemMenuItemsEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1129:    return useWebsocketPluginMessageListener<Plugin_Server_ActionRenderEpisodeGridItemMenuItemsEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1131:        type: PluginServerEvents.ActionRenderEpisodeGridItemMenuItems,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1136:export type Plugin_Server_ActionRenderAnimeLibraryDropdownItemsEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1140:export function usePluginListenActionRenderAnimeLibraryDropdownItemsEvent(cb: (payload: Plugin_Server_ActionRenderAnimeLibraryDropdownItemsEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1141:    return useWebsocketPluginMessageListener<Plugin_Server_ActionRenderAnimeLibraryDropdownItemsEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1143:        type: PluginServerEvents.ActionRenderAnimeLibraryDropdownItems,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1148:export type Plugin_Server_AnimeEntryEpisodeTabsUpdatedEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1152:export function usePluginListenAnimeEntryEpisodeTabsUpdatedEvent(cb: (payload: Plugin_Server_AnimeEntryEpisodeTabsUpdatedEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1153:    return useWebsocketPluginMessageListener<Plugin_Server_AnimeEntryEpisodeTabsUpdatedEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1155:        type: PluginServerEvents.AnimeEntryEpisodeTabsUpdated,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1160:export type Plugin_Server_AnimeEntryEpisodeTabEpisodeCollectionEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1164:export function usePluginListenAnimeEntryEpisodeTabEpisodeCollectionEvent(cb: (payload: Plugin_Server_AnimeEntryEpisodeTabEpisodeCollectionEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1165:    return useWebsocketPluginMessageListener<Plugin_Server_AnimeEntryEpisodeTabEpisodeCollectionEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1167:        type: PluginServerEvents.AnimeEntryEpisodeTabEpisodeCollection,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1172:export type Plugin_Server_FormResetEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1177:export function usePluginListenFormResetEvent(cb: (payload: Plugin_Server_FormResetEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1178:    return useWebsocketPluginMessageListener<Plugin_Server_FormResetEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1180:        type: PluginServerEvents.FormReset,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1185:export type Plugin_Server_FormSetValuesEventPayload = {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1190:export function usePluginListenFormSetValuesEvent(cb: (payload: Plugin_Server_FormSetValuesEventPayload, extensionId: string) => void, extensionID: string) {
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1191:    return useWebsocketPluginMessageListener<Plugin_Server_FormSetValuesEventPayload>({
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1193:        type: PluginServerEvents.FormSetValues,
+seanime-web/src/app/(main)/_features/plugin/generated/plugin-events.ts:1198:export type Plugin_Server_FieldRefSetValueEventPayload = {
+shivansh@Shivansh-MacBook seanime-main % 
